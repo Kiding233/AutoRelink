@@ -14,7 +14,7 @@ AutoRelink 插件开发工作区——为 [Project Graph](https://github.com/gra
 |------|------|------|
 | **主插件（extprg）** | `src/`、`package.json`、`tsconfig.json` | 可修改 |
 | 知识库 | `knowledge*.txt` | 可修改 |
-| **上游源码（参考）** | `project-graph-3.2.2/` | **只读，禁止修改** |
+| **上游源码（参考）** | `_local/project-graph-3.2.2/` | **只读，禁止修改** |
 
 ## 开发命令
 
