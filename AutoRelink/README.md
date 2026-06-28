@@ -1,0 +1,10 @@
+# My Extension
+
+A Project Graph extension
+
+## Development
+
+- `pnpm build` — Build the extension
+- `pnpm dev` — Watch mode with auto-install
+- `pnpm package` — Package the extension for distribution
+- `pnpm install:ext` — Install the extension into Project Graph

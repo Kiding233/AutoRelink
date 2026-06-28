@@ -1,0 +1,10 @@
+{
+  "version": "3.0.0",
+  "extension": {
+    "id": "Linklogic.AutoRelink",
+    "name": "连线端点自动调整",
+    "description": "根据用户拖拽节点的方式自动调整连线端点的位置",
+    "version": "1.0.0",
+    "author": "Kiding"
+  }
+}

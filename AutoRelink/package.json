@@ -1,0 +1,18 @@
+{
+  "name": "Linklogic.AutoRelink",
+  "displayName": "连线端点自动调整",
+  "version": "1.0.0",
+  "description": "根据用户拖拽节点的方式自动调整连线端点的位置",
+  "author": "Kiding",
+  "devDependencies": {
+    "extprg": "^1.0.0",
+    "extprg-types": "^1.0.7",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "build": "extprg build",
+    "dev": "extprg dev",
+    "package": "extprg package",
+    "install:ext": "extprg install"
+  }
+}
