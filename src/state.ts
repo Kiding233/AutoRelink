@@ -76,6 +76,24 @@ export interface EdgeIndexEntry {
 
 export let cachedEdgeIndex: Map<string, { out: EdgeIndexEntry[]; in_: EdgeIndexEntry[] }> | null = null;
 export let cachedEdgeCount = -1;
+export let cachedAllEdges: any[] | null = null;
+
+/**
+ * 获取所有边（缓存复用：拖拽过程中边数不变则不重新 IPC）
+ * 调用方可通过 invalidate=true 强制刷新
+ */
+export async function getCachedEdges(sm: any, invalidate = false): Promise<any[]> {
+  if (invalidate || cachedAllEdges === null) {
+    cachedAllEdges = await sm.getEdges();
+  }
+  return cachedAllEdges;
+}
+
+export function invalidateEdgeCache(): void {
+  cachedAllEdges = null;
+  cachedEdgeIndex = null;
+  cachedEdgeCount = -1;
+}
 
 /**
  * 构建边索引：(源UUID → 出边列表) + (目标UUID → 入边列表)
@@ -205,8 +223,7 @@ export function showPerf(): void {
 export function resetCache(): void {
   setCachedProject(null);
   setCachedSm(null);
-  cachedEdgeIndex = null;
-  cachedEdgeCount = -1;
+  invalidateEdgeCache();
   rectCache.clear();
   entityHistory.clear();
   debugLogs.length = 0;

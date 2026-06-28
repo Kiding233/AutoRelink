@@ -12,35 +12,24 @@ AutoRelink 插件开发工作区——为 [Project Graph](https://github.com/gra
 
 | 区域 | 路径 | 权限 |
 |------|------|------|
-| **主插件（extprg）** | `AutoRelink/` | 可修改 |
-| 旧版参考 | `AutoRelink_legacy/` | 只读（JS 原版备份） |
+| **主插件（extprg）** | `src/`、`package.json`、`tsconfig.json` | 可修改 |
 | 知识库 | `knowledge*.txt` | 可修改 |
 | **上游源码（参考）** | `project-graph-3.2.2/` | **只读，禁止修改** |
-| Python 原型 | `linklogic/` | 可修改 |
 
 ## 开发命令
 
 ```bash
-# pnpm 路径
-PNPM="C:/Users/DELL/AppData/Roaming/npm/pnpm.cmd"
-
-cd AutoRelink
-
-$PNPM install        # 安装依赖
-$PNPM dev            # 开发模式（热重载，自动安装到本地 PG）
-$PNPM build          # 编译 → dist/extension.js
-$PNPM package        # 打包 → out/Linklogic.AutoRelink-1.0.0.zip
-$PNPM install:ext    # 手动安装到本地 Project Graph
-
-# 构建也可用 npx（绕过 pnpm approve-builds 问题）
-npx extprg build
+pnpm install      # 安装依赖
+pnpm dev          # 开发模式（热重载，自动安装到本地 PG）
+pnpm build        # 构建 → dist/extension.js + metadata.msgpack
+pnpm package      # 打包 → out/Linklogic.AutoRelink-v1.0.0.prg
+pnpm install:ext  # 安装到本地 Project Graph
 ```
 
 ## 项目结构
 
 ```
-AutoRelink/
-├── src/
+src/
 │   ├── extension.ts   ← 入口：生命周期(start/stop/toggle) + 快捷键注册
 │   ├── tick.ts        ← 主循环 tick() + adjust() + 运行时状态（enable/disable）
 │   ├── algorithm.ts   ← 八方向区域划分 + 方向消歧 + calcRates
