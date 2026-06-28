@@ -13,7 +13,7 @@ AutoRelink 插件开发工作区——为 [Project Graph](https://github.com/gra
 | 区域 | 路径 | 权限 |
 |------|------|------|
 | **主插件（extprg）** | `src/`、`package.json`、`tsconfig.json` | 可修改 |
-| 知识库 | `knowledge*.txt` | 可修改 |
+| 知识库 | `knowledge/` | 可修改 |
 | **上游源码（参考）** | `_local/project-graph-3.2.2/` | **只读，禁止修改** |
 
 ## 开发命令
@@ -69,10 +69,10 @@ tick.ts ───────────┘
 ## 知识库
 
 4 篇 `knowledge_*.txt`（按使用场景拆分）：
-- `knowledge.txt` — 导航索引
-- `knowledge_core.txt` — Comlink 法则 + API 清单（已同步至 3.2.2）
-- `knowledge_autorelink.txt` — 性能优化实录
-- `knowledge_architecture.txt` — PG 源码架构
+- `knowledge/knowledge.txt` — 导航索引
+- `knowledge/knowledge_core.txt` — Comlink 法则 + API 清单（已同步至 3.2.2）
+- `knowledge/knowledge_autorelink.txt` — 性能优化实录
+- `knowledge/knowledge_architecture.txt` — PG 源码架构
 
 ## 调试
 
