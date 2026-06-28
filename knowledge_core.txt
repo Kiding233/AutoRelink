@@ -1,0 +1,911 @@
+# Project Graph 3.2.2 插件开发知识库 - 核心篇
+
+> **基于 AutoRelink 插件开发过程中的实际测试结果**
+>
+> **适用版本**: project-graph-3.2.2 | **最后更新**: 2026-06-28 (API 清单同步至 3.2.2)
+>
+> **阅读时间**: 快速入门 15分钟 | 完整阅读 45分钟
+
+---
+
+## 📋 核心要点速查（30秒版）
+
+| 你想了解... | 所在章节 |
+|------------|----------|
+| ⚡ Comlink 最重要规则 | §1.1 五大黄金法则 |
+| 🔥 最常见的3个错误 | §1.3 Top 3 错误排行榜 |
+| 📖 API 函数列表 | 第四章：Project Graph API 清单 |
+| 🐛 遇到 Bug 怎么办？ | 第七章：常见错误及解决方案 |
+| 🔧 调试技巧 | 第六章：调试工具箱 |
+| 📦 如何打包插件 | §5.1 插件文件结构 |
+
+**📚 更多详细内容请参阅：**
+- [实战案例：AutoRelink插件开发实录](knowledge_autorelink.txt) - 性能优化、算法设计、完整流程
+- [架构深度解析](knowledge_architecture.txt) - 源码结构、类体系、设计模式
+
+---
+
+===========================================
+# 第一部分：快速入门 & 核心方法论 ⚡
+===========================================
+
+> 🎯 **新人建议**：如果你是第一次开发 Project Graph 插件，
+> 请按顺序阅读本部分的第1-3章，掌握核心概念后再进入实践环节。
+
+## 一、Comlink 编程核心法则
+
+### 1.1 🎯 五大黄金法则（必须遵守！）
+
+#### 法则一：所有属性访问都要 await
+
+```javascript
+const val = await obj.property;
+const nested = await obj.inner.prop;  // 嵌套属性也要 await
+```
+
+**原因**：Comlink Proxy 对象的每个属性都是 Promise/Proxy，不 await 会得到 `[object Promise]`
+
+#### 法则二：所有 async 函数调用都要 await
+
+```javascript
+const result = await myAsyncFunction();  // 不要漏掉 await！
+```
+
+**后果**：忘记 await 得到的是 Promise 对象，导致循环不执行、数据异常等静默失败
+
+#### 法则三：不要存储 Proxy 对象到集合中
+
+```javascript
+// ❌ 错误：存入 Set/Map 后遍历会报错
+entitySet.add(await edge.source);
+
+// ✅ 正确：用 UUID 字符串作为标识符
+const uuid = await entity.uuid;
+uuidList.push(uuid);
+objCache[uuid] = entity;  // 用普通对象缓存引用
+```
+
+**原因**：Object.keys()、String()、Set/Map 遍历等操作对 Proxy 会抛错 "Cannot convert object to primitive value"
+
+#### 法则四：尽早将 Proxy 数据转换为普通对象
+
+```javascript
+// ✅ 推荐：在数据入口处就转换好
+async function getRect(e) {
+  const r = await e.collisionBox.getRectangle();
+  return {
+    left: await r.left,
+    right: await r.right,
+    top: await r.top,
+    bottom: await r.bottom,
+    center: {
+      x: await r.center.x,
+      y: await r.center.y
+    }
+  };
+}
+// 之后可以直接用 rect.left 等，无需再次 await
+```
+
+#### 法则五：修改边属性后必须 updateReferences()
+
+```javascript
+edge.sourceRectangleRate = { _: "Vector", x: 0.99, y: 0.5 };
+edge.targetRectangleRate = { _: "Vector", x: 0.01, y: 0.5 };
+await stageManager.updateReferences();  // 必须！否则界面不刷新
+```
+
+### 1.2 🎪 Comlink Proxy 对象速查表
+
+| 操作 | 结果 | 是否允许 |
+|------|------|---------|
+| `await proxyObj.property` | 正常获取值 | ✅ |
+| `await proxyObj.method()` | 正常调用方法 | ✅ |
+| `typeof proxyObj` | `"object"` | ✅ |
+| `Object.keys(proxyObj)` | 抛出错误 | ❌ |
+| `String(proxyObj)` | 抛出错误 | ❌ |
+| `new Set().add(proxyObj)` | 存入成功但遍历时报错 | ❌ |
+| `JSON.stringify(proxyObj)` | 抛出错误 | ❌ |
+| `proxyObj === anotherProxy` | 可能返回 false（即使逻辑相同） | ⚠️ 不推荐 |
+
+### 1.3 🔥 Top 3 错误排行榜（按频率排序）
+
+#### #1️⃣ [object Promise] 出现（频率：⭐⭐⭐⭐⭐）
+
+**症状**：
+```javascript
+const r = await entity.collisionBox.getRectangle();
+console.log(r.left);  // 输出: [object Promise] ❌
+```
+
+**解决**：每个属性都要 await
+```javascript
+const left = await r.left;  // ✅
+```
+
+#### #2️⃣ async 函数忘记 await（频率：⭐⭐⭐⭐）
+
+**症状**：代码无报错但不生效、循环不执行、变量类型错误
+
+**解决**：
+```javascript
+// ❌ const arr = getData();  // arr 是 Promise
+// ✅ const arr = await getData();  // arr 是真正的数组
+```
+
+#### #3️⃣ Cannot convert object to primitive（频率：⭐⭐⭐）
+
+**症状**：对 Proxy 执行了禁止操作
+
+**解决**：改用 UUID 字符串作为标识符，不要存储 Proxy 到集合中
+
+### 1.4 💡 12条核心开发建议（已分类）
+
+#### 🔬 调试与测试 (3条)
+1. **先用测试插件验证 API** — 不要在主插件中同时测试 API 和业务逻辑
+2. **逐行诊断日志是神器** — 编号日志能精确定位问题行号
+3. **发布前做 diff 比较** — 调试版和发布版的差异应该只有日志相关
+
+#### ⚠️ 注意事项 (4条)
+4. **角落端点值可能有风险** — 即使不是插件导致的，也应避免使用 `{x:0.99, y:0.99}` 这样的角落值
+5. **异步数据有时间戳** — 分两次获取的数据可能不一致，需要预计算缓存
+6. **语法错误会静默失败** — 不会报错，只是后续代码全不执行（包括快捷键注册！）
+7. **Web Worker 没有 window 对象** — 用 `globalThis` 代替
+
+#### 🚀 性能与优化 (3条)
+8. **大图场景必须考虑性能** — 60fps 下每帧时间有限（16ms），要减少异步调用次数
+9. **移动检测不能依赖单一机制** — 结合阈值检测 + 强制调整双重保障
+10. **缓存是解决重复计算的标准方案** — 建索引只做一次，后续 O(1) 查找
+
+#### 📚 方法论 (2条)
+11. **阅读源码比猜测更可靠** — `Entity.edges` 是 function 但调用失败，源码揭示了真正原因（GraphMethods 未暴露给插件）
+12. **Comlink 函数可能有上下文问题** — `.apply(undefined)` 失败说明 Proxy 函数不是普通函数
+
+---
+
+## 二、Comlink 深度机制解析
+
+> 📖 **前置知识**：阅读完 §1.1 五大黄金法则后再深入本章节
+
+### 2.1 Proxy 对象的本质与限制
+
+#### Comlink Proxy 不能进行的操作
+
+以下操作会抛出 "Cannot convert object to primitive value" 错误：
+
+**❌ 禁止操作**：
+- Object.keys(proxyObj)
+- Reflect.ownKeys(proxyObj)
+- String(proxyObj) / proxyObj.toString()
+- new Set().add(proxyObj) （存入成功，但遍历/读取时抛错）
+- new Map().set(key, proxyObj) （如果 key 是 proxy 可能有问题）
+- JSON.stringify(proxyObj)
+- 对 proxyObj 进行 == 或 === 比较对象引用（可能返回 false）
+
+**✅ 允许操作**：
+- 访问属性: `await proxyObj.uuid`
+- 调用方法: `await proxyObj.method()`
+- 类型检查: `typeof proxyObj === "object"`
+- 参数传递: 将 proxyObj 作为参数传递给其他 API
+- 作为键值: 用字符串作为 Map/Set 的 key
+
+#### Comlink Proxy 的本质
+
+- Comlink Proxy 是远程对象的本地代理
+- 每次访问属性或调用方法都是跨线程通信（IPC）
+- 所有属性访问都需要 await
+- Proxy 对象本身不能被序列化或转换为原始值
+- 同一个远程对象每次获取可能返回不同的 Proxy 实例（引用不同）
+
+### 2.2 🔴 关键发现：属性访问的 Promise 链
+
+这是最容易犯的错误！Comlink Proxy 返回的对象，其属性仍然是 Proxy/Promise：
+
+```javascript
+// ❌ 错误：直接读取属性，得到的是 [object Promise]
+const r = await entity.collisionBox.getRectangle();
+console.log(r.left);        // 输出: [object Promise] ❌
+console.log(r.center.x);    // 输出: [object Promise] ❌
+
+// ✅ 正确：每个属性都需要 await
+const r = await entity.collisionBox.getRectangle();
+const left = await r.left;           // ✅ 得到数字
+const top = await r.top;             // ✅ 得到数字
+const centerX = await r.center.x;    // ✅ 得到数字
+const centerY = await r.center.y;    // ✅ 得到数字
+```
+
+**规则**：
+1. `await entity.method()` → 返回值可能是 Proxy 对象
+2. Proxy 对象的 `.property` → 也是 Promise，需要再次 `await`
+3. 嵌套对象如 `.center.x` → 需要两次 `await`
+
+### 2.3 🔴 关键发现：async 函数必须加 await！
+
+```javascript
+// ❌ 错误：async 函数没加 await，返回的是 Promise 对象
+async function getRelated(p, uid) { ... return { out, in_ }; }
+const { out, in_ } = getRelated(p, uid);  // out 和 in_ 是 Promise！❌
+for (const e of out) { ... }              // 循环不执行！
+
+// ✅ 正确：必须加 await
+const { out, in_ } = await getRelated(p, uid);  // 得到真正的数组 ✅
+```
+
+### 2.4 解决方案：UUID 字符串标识符
+
+```javascript
+// ❌ 错误：存储 Comlink Proxy 对象
+const entitySet = new Set();
+entitySet.add(await edge.source);  // 存入可能成功
+for (const e of entitySet) { ... }  // 遍历时出错！
+
+// ✅ 正确：存储 UUID 字符串 + 缓存对象
+const uuidList = [];
+const objCache = {};
+const uuid = await entity.uuid;
+uuidList.push(uuid);
+objCache[uuid] = entity;  // 用普通对象缓存
+// 之后通过 uuid 从 cache 中取回
+```
+
+### 2.5 推荐的 getRect() 安全写法
+
+```javascript
+async function getRect(entity) {
+  const r = await entity.collisionBox.getRectangle();
+  return {
+    left: await r.left,
+    right: await r.right,
+    top: await r.top,
+    bottom: await r.bottom,
+    center: {
+      x: await r.center.x,
+      y: await r.center.y
+    }
+  };
+}
+// 返回纯 JavaScript 对象，所有属性都是数字，可以直接使用
+```
+
+---
+
+## 三、异步编程最佳实践
+
+### 3.1 Comlink 的性能影响
+
+每次 await 都是一次跨线程通信，频繁调用会影响性能：
+- 缓存常用的对象引用
+- 批量处理数据
+- 避免在循环中重复获取同一个值
+
+### 3.2 推荐的缓存策略
+
+```javascript
+// ✅ 好：缓存 project 和 stageManager
+const project = await prg.tabs_getCurrentProject();
+const stageManager = await project.stageManager;
+
+// ✅ 好：批量获取所有边的 UUID
+for (const edge of allEdges) {
+  const srcUUID = await edge.source.uuid;  // 先获取
+  const tgtUUID = await edge.target.uuid;
+  // 再比较和存储
+}
+
+// ✅ 好：使用 getRect() 封装，一次性获取所有坐标并转为普通对象
+const rect = await getRect(entity);  // 之后可直接用 rect.left 等
+```
+
+### 3.3 黄金法则完整参考
+
+> 📖 **精简版**见 §1.1 五大黄金法则
+
+本节为详细展开，包含完整的代码示例和原因说明。核心要点已在第一章中呈现。
+
+---
+
+===========================================
+# 第二部分：API 参考 & 开发基础 📖
+===========================================
+
+## 四、Project Graph API 函数清单（v3.2.2）
+
+> 🔑 图例：⭐⭐⭐ AutoRelink 核心依赖 | ⭐⭐ 插件开发常用 | ⭐ 3.2.2 新增/扩展
+
+### 4.1 全局宿主方法 (prg)
+
+#### 4.1.1 Project / Tab 操作 ⭐⭐⭐
+
+| 函数 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| prg.tabs_getCurrentProject() | Project 或 null | 获取当前打开的项目 | ✅ 正常 |
+| prg.tabs_getCurrent() | Tab 或 null | 获取当前标签页（3.2.2 新增） | ❓ 未测试 |
+| prg.tabs_getAll() | Tab[] | 获取所有标签页（3.2.2 新增） | ❓ 未测试 |
+| prg.tabs_getAllProjects() | Project[] | 获取所有 Project 标签页（3.2.2 新增） | ❓ 未测试 |
+
+#### 4.1.2 Toast 通知 ⭐⭐
+
+| 函数 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| prg.toast(msg) | void | 显示普通提示弹窗 | ✅ 正常 |
+| prg.toast_success(msg) | void | 显示绿色成功弹窗 | ✅ 正常 |
+| prg.toast_error(msg) | void | 显示红色错误弹窗 | ✅ 正常 |
+| prg.toast_warning(msg) | void | 显示黄色警告弹窗 | ✅ 正常 |
+
+注意：所有 toast 会自动附加 "来自扩展: {插件名}" 标识。
+
+#### 4.1.3 快捷键注册 ⭐⭐
+
+| 函数 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| prg.keybinds_register(id, icon, defaultKey, onPress, onRelease?, isContinuous?) | void | 注册序列快捷键 | ✅ 正常 |
+| prg.keybinds_unregisterAll() | void | 注销该扩展的所有快捷键（3.2.2 新增） | ❓ 未测试 |
+
+⚠️ **签名变更 (3.0 → 3.2.2)**：`keybinds_register` 新增了两个可选参数：
+- `onRelease?: () => void` — 按键释放回调
+- `isContinuous?: boolean` — 是否连续触发（按住时重复调用 onPress）
+
+#### 4.1.4 对话框 ⭐（3.2.2 新增）
+
+| 函数 | 返回类型 | 说明 |
+|------|---------|------|
+| prg.dialog_confirm(title?, description?, opts?) | Promise\<boolean\> | 确认对话框 |
+| prg.dialog_input(title?, description?, opts?) | Promise\<string \| undefined\> | 输入框对话框 |
+| prg.dialog_copy(title?, description?, value?) | Promise\<void\> | 复制内容对话框 |
+| prg.dialog_buttons(title, description, buttons) | Promise\<button["id"]\> | 多按钮选择对话框 |
+
+#### 4.1.5 网络请求 ⭐（3.2.2 新增）
+
+| 函数 | 返回类型 | 说明 |
+|------|---------|------|
+| prg.fetch(url, init?) | Response | Tauri HTTP fetch |
+| prg.fetch_base64(url) | Promise\<string\> | 获取资源并转为 data:base64 URL |
+| prg.fetch_json(url) | Promise\<unknown\> | 获取并解析 JSON |
+| prg.fetch_binary(url) | Promise\<{buffer, mimeType}\> | 获取二进制数据 |
+
+#### 4.1.6 系统命令 ⭐（3.2.2 新增）
+
+| 函数 | 返回类型 | 说明 |
+|------|---------|------|
+| prg.shell_execute(program, args?, stdin?) | Promise\<{code, stdout, stderr}\> | 执行外部程序 |
+
+#### 4.1.7 扩展设置 ⭐（3.2.2 新增）
+
+| 函数 | 返回类型 | 说明 |
+|------|---------|------|
+| prg.settings_getOwn(key) | Promise\<any\> | 读取扩展自有设置 |
+| prg.settings_setOwn(key, value) | Promise\<void\> | 写入扩展自有设置 |
+| prg.settings_getGlobal(key) | Promise\<any\> | 读取全局设置（拦截 aiApiKey） |
+| prg.settings_setGlobal(key, value) | Promise\<void\> | 修改全局设置（拦截 aiApiBaseUrl） |
+
+#### 4.1.8 自定义实体 ⭐（3.2.2 新增）
+
+| 函数 | 返回类型 | 说明 |
+|------|---------|------|
+| prg.entity_registerType(typeName, initialData, collisionBox, renderFn) | Promise\<void\> | 注册自定义实体类型 |
+| prg.entity_onClick(typeName, handler) | Promise\<void\> | 注册实体点击处理器 |
+| prg.entity_create(typeName, data, location) | Promise\<ExtensionEntity\> | 创建自定义实体实例 |
+
+---
+
+### 4.2 项目对象 (Project)
+
+| 属性/方法 | 返回类型 | 说明 | 测试状态 |
+|-----------|---------|------|---------|
+| project.stageManager | StageManager (Proxy) | 获取舞台管理器 | ✅ 正常 |
+
+---
+
+### 4.3 StageManager ⭐⭐⭐
+
+#### 核心获取方法（AutoRelink 高频使用）
+
+| 方法 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| sm.getEdges() | Edge[] | 获取所有有向边 | ✅ 正常 |
+| sm.getSelectedEntities() | Entity[] | 获取选中的实体 ⚠️ 可能 undefined | ✅ 正常 |
+| sm.updateReferences() | void | 刷新运行时引用（修改边属性后必须调用） | ✅ 正常 |
+| sm.getEntities() | Entity[] | 获取所有实体 | ❓ 未测试 |
+| sm.getAssociations() | Association[] | 获取所有关联（含无向边） | ❓ 未测试 |
+
+#### 按类型获取（3.2.2 新增）
+
+| 方法 | 返回类型 | 说明 |
+|------|---------|------|
+| sm.getTextNodes() | TextNode[] | 获取所有文本节点 |
+| sm.getImageNodes() | ImageNode[] | 获取所有图片节点 |
+| sm.getSections() | Section[] | 获取所有 Section |
+| sm.getConnectPoints() | ConnectPoint[] | 获取所有连接点 |
+| sm.getLineEdges() | LineEdge[] | 获取所有直线边 |
+| sm.getCrEdges() | CubicCatmullRomSplineEdge[] | 获取所有 CR 曲线边 |
+| sm.getConnectableEntity() | ConnectableEntity[] | 获取所有可连线实体（排除背景图片） |
+| sm.getStageObjects() | StageObject[] | 获取所有舞台对象 |
+| sm.getUrlNodes() | UrlNode[] | 获取所有 URL 节点 |
+| sm.getPenStrokes() | PenStroke[] | 获取所有涂鸦笔迹 |
+| sm.getSvgNodes() | SvgNode[] | 获取所有 SVG 节点 |
+| sm.getLatexNodes() | LatexNode[] | 获取所有 LaTeX 节点 |
+
+#### 按 UUID 查找（3.2.2 新增）
+
+| 方法 | 返回类型 | 说明 |
+|------|---------|------|
+| sm.get(uuid) | StageObject | O(n) 通用查找 |
+| sm.getEntitiesByUUIDs(uuids) | Entity[] | 批量获取实体 |
+| sm.getTextNodeByUUID(uuid) | TextNode \| null | 按 UUID 找文本节点 |
+| sm.getConnectableEntityByUUID(uuid) | ConnectableEntity \| null | 按 UUID 找可连线实体 |
+| sm.getSectionByUUID(uuid) | Section \| null | 按 UUID 找 Section |
+| sm.isSectionByUUID(uuid) | boolean | 判断 UUID 是否为 Section |
+
+#### 按位置查找（3.2.2 新增）
+
+| 方法 | 返回类型 | 说明 |
+|------|---------|------|
+| sm.findEntityByLocation(location) | Entity \| null | 按坐标找实体（优先涂鸦） |
+| sm.findTextNodeByLocation(location) | TextNode \| null | 按坐标找文本节点 |
+| sm.findLineEdgeByLocation(location) | LineEdge \| null | 按坐标找直线边 |
+| sm.findAssociationByLocation(location) | Association \| null | 按坐标找关联 |
+| sm.findSectionByLocation(location) | Section \| null | 按坐标找 Section |
+| sm.findImageNodeByLocation(location) | ImageNode \| null | 按坐标找图片节点 |
+| sm.findConnectableEntityByLocation(location) | ConnectableEntity \| null | 按坐标找可连线实体 |
+| sm.findConnectPointByLocation(location) | ConnectPoint \| null | 按坐标找连接点 |
+| sm.isEntityOnLocation(location) | boolean | 判断坐标是否有实体 |
+| sm.isAssociationOnLocation(location) | boolean | 判断坐标是否有关联 |
+
+#### 选中状态（3.2.2 新增）
+
+| 方法 | 返回类型 | 说明 |
+|------|---------|------|
+| sm.isHaveEntitySelected() | boolean | 是否有选中实体 |
+| sm.getSelectedAssociations() | Association[] | 获取选中的关联 |
+| sm.getSelectedStageObjects() | StageObject[] | 获取选中的舞台对象（实体+关联） |
+| sm.getBoundingBoxOfSelected() | Rectangle | 选中内容的外接矩形 |
+| sm.selectAll() | void | 全选 |
+| sm.clearSelectAll() | void | 清除全选 |
+| sm.isEmpty() | boolean | 舞台是否为空 |
+| sm.isNoEntity() | boolean | 是否没有任何实体 |
+| sm.isEntityExists(uuid) | boolean | 检查实体是否存在 |
+
+#### 舞台尺寸（3.2.2 新增）
+
+| 方法 | 返回类型 | 说明 |
+|------|---------|------|
+| sm.getCenter() | Vector | 所有物理对象的中心点 |
+| sm.getSize() | Vector | 舞台尺寸 |
+| sm.getBoundingRectangle() | Rectangle | 舞台外接矩形 |
+
+#### 节点操作：创建/删除/连接（3.2.2 新增）
+
+| 方法 | 说明 |
+|------|------|
+| sm.add(stageObject, skipUpdateReferences?) | 添加对象到舞台 |
+| sm.delete(stageObject) | 删除单个对象 |
+| sm.deleteEntities(entities) | 批量删除实体（记录历史） |
+| sm.deleteSelectedStageObjects() | 删除选中的对象 |
+| sm.deleteAssociation(association) | 删除单个关联 |
+| sm.deleteEdge(edge) | 删除单条有向边 |
+| sm.connectEntity(from, to, isCrEdge?) | 连接两个实体 |
+| sm.connectMultipleEntities(froms[], to, isCrEdge?, srcRate?, tgtRate?, isArcEdge?) | 多重连线 |
+| sm.connectEntityByCrEdge(from, to) | 用 CR 曲线连接 |
+| sm.reverseSelectedEdges() | 反转选中边方向 |
+
+#### 节点操作：生成（3.2.2 新增）
+
+| 方法 | 说明 |
+|------|------|
+| sm.generateNodeTreeByText(text, indention?, location?) | 按缩进文本生成树 |
+| sm.generateNodeGraphByText(text, location?) | 按图语法生成节点 |
+| sm.generateNodeMermaidByText(text, location?) | 按 Mermaid 语法生成节点 |
+| sm.generateNodeByMarkdown(text, location?, autoLayout?) | 按 Markdown 生成节点 |
+
+#### Section 操作（3.2.2 新增）
+
+| 方法 | 说明 |
+|------|------|
+| sm.packEntityToSection(entities) | 打包实体到 Section（async） |
+| sm.packEntityToSectionBySelected() | 将选中实体打包为 Section（async） |
+| sm.goInSection(entities, section) | 将实体放入 Section |
+| sm.goOutSection(entities, section) | 将实体从 Section 移出 |
+| sm.packSelectedSection() | 折叠选中的 Section |
+| sm.unpackSelectedSection() | 展开选中的 Section |
+| sm.sectionSwitchCollapse() | 切换 Section 折叠状态 |
+
+#### 边操作（3.2.2 新增）
+
+| 方法 | 说明 |
+|------|------|
+| sm.changeSelectedEdgeConnectLocation(direction, isSource?) | 更改选中边的连接位置 |
+| sm.changeEdgesConnectLocation(edges, direction, isSource?) | 批量更改边连接位置 |
+| sm.switchLineEdgeToCrEdge() | 直线边 → 曲线边 |
+| sm.switchEdgeToUndirectedEdge() | 有向边 → 无向边 |
+| sm.switchUndirectedEdgeToEdge() | 无向边 → 有向边 |
+| sm.addSelectedCREdgeControlPoint() | 添加 CR 曲线控制点 |
+| sm.addSelectedCREdgeTension() | 增加 CR 曲线张力 |
+| sm.reduceSelectedCREdgeTension() | 减少 CR 曲线张力 |
+| sm.setSelectedEdgeLineType(lineType) | 设置选中边的线条类型 |
+| sm.refreshAllStageObjects() | 刷新所有舞台对象 |
+| sm.refreshSelected() | 刷新选中的对象 |
+
+---
+
+### 4.4 节点实体 (Entity)
+
+#### AutoRelink 核心依赖 ⭐⭐⭐
+
+| 属性/方法 | 返回类型 | 说明 | 测试状态 |
+|-----------|---------|------|---------|
+| entity.uuid | string (Promise) | 节点唯一标识符（需 await） | ✅ 正常 |
+| entity.collisionBox | CollisionBox (Proxy) | 碰撞盒 | ✅ 正常 |
+
+#### 3.2.2 新增属性 ⭐
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| entity.details | Value (platejs) | 富文本详情内容 |
+| entity.detailsManager | DetailsManager | 详情管理器（桥接模式） |
+| entity.parentSection | Section \| null | 运行时父级 Section（不参与序列化） |
+| entity.sectionDepth | number | 运行时层级深度 |
+| entity.nearestLockedAncestorSection | Section \| null | 最近锁定祖先 Section |
+| entity.isMouseHover | boolean | 鼠标是否悬浮 |
+| entity.isHiddenBySectionCollapse | boolean | 是否因 Section 折叠而隐藏 |
+| entity.isAlignExcluded | boolean | 是否忽略自动对齐 |
+
+#### 3.2.2 新增方法 ⭐
+
+| 方法 | 说明 |
+|------|------|
+| entity.move(delta: Vector) | 移动指定距离 |
+| entity.moveTo(location: Vector) | 移动到指定位置（左上角对齐） |
+| entity.detailsButtonRectangle() | 获取详情按钮的矩形区域 |
+| entity.isMouseInDetailsButton(mouseWorldLocation) | 判断鼠标是否在详情按钮内 |
+| entity.referenceButtonCircle() | 获取引用按钮的圆形区域 |
+| entity.isMouseInReferenceButton(mouseWorldLocation) | 判断鼠标是否在引用按钮内 |
+| entity.updateFatherSectionByMove() | 移动后递归更新父级 Section |
+
+---
+
+### 4.5 CollisionBox
+
+| 方法 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| collisionBox.getRectangle() | Rectangle (Proxy!) | 获取最小外接矩形 ⭐⭐⭐ | ✅ 正常 |
+| collisionBox.isContainsPoint(location) | boolean | 点命中检测 ⭐（3.2.2 新增） | ❓ 未测试 |
+| collisionBox.isIntersectsWithRectangle(rect) | boolean | 矩形框选碰撞检测 ⭐（3.2.2 新增） | ❓ 未测试 |
+| collisionBox.isContainedByRectangle(rect) | boolean | 矩形完全覆盖检测 ⭐（3.2.2 新增） | ❓ 未测试 |
+| collisionBox.isIntersectsWithLine(line) | boolean | 线段碰撞检测 ⭐（3.2.2 新增） | ❓ 未测试 |
+| collisionBox.shapes | Shape[] | 形状列表 ⭐ | ❓ 未测试 |
+| collisionBox.updateShapeList(shapes) | void | 更新形状列表 ⭐ | ❓ 未测试 |
+
+⚠️ getRectangle() 返回的 Rectangle 是 Comlink Proxy 对象，其属性需分别 await！
+
+---
+
+### 4.6 Rectangle 对象（⚠️ 全部是 Promise）
+
+| 属性 | 实际类型 | 获取方式 | 说明 |
+|------|---------|---------|------|
+| rect.left | Promise\<number\> | `await r.left` | 左边界 x 坐标 |
+| rect.right | Promise\<number\> | `await r.right` | 右边界 x 坐标 |
+| rect.top | Promise\<number\> | `await r.top` | 上边界 y 坐标 |
+| rect.bottom | Promise\<number\> | `await r.bottom` | 下边界 y 坐标 |
+| rect.center | Center (Proxy) | — | 中心点对象（也是 Proxy）|
+| rect.center.x | Promise\<number\> | `await r.center.x` | 中心点 x 坐标 |
+| rect.center.y | Promise\<number\> | `await r.center.y` | 中心点 y 坐标 |
+
+---
+
+### 4.7 边 (Edge) ⭐⭐⭐
+
+#### AutoRelink 核心依赖（已测试）
+
+| 属性 | 返回类型 | 说明 | 测试状态 |
+|------|---------|------|---------|
+| edge.source | Entity (Proxy) | 源节点（需 await 后取 .uuid） | ✅ 正常 |
+| edge.target | Entity (Proxy) | 目标节点（需 await 后取 .uuid） | ✅ 正常 |
+| edge.sourceRectangleRate | Vector | 源端连接位置比例 | ✅ 可读写 |
+| edge.targetRectangleRate | Vector | 目标端连接位置比例 | ✅ 可读写 |
+
+#### 3.2.2 新增属性 ⭐
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| edge.text | string | 边上文字 |
+| edge.textRectangle | Rectangle | 文字外框矩形 |
+| edge.bodyLine | Line | 两端在实体边缘的连线线段 |
+| edge.sourceLocation | Vector | 源端点世界坐标 |
+| edge.targetLocation | Vector | 目标端点世界坐标 |
+| edge.isHiddenBySectionCollapse | boolean | 源和目标都被 Section 折叠隐藏时为 true |
+| edge.isSelected | boolean | 选中状态（可读写） |
+
+#### 3.2.2 新增方法 ⭐
+
+| 方法 | 说明 |
+|------|------|
+| edge.rename(text) | 重命名边文字 |
+| edge.reverse() | 反转边方向（从 ConnectableAssociation 继承） |
+| edge.adjustSizeByText() | 根据文字调整碰撞箱大小 |
+
+#### 方向判断方法（3.2.2 新增）⭐⭐
+
+这些方法基于 sourceRectangleRate 判断边的连接方向，对 AutoRelink 算法优化有价值：
+
+| 方法 | 说明 |
+|------|------|
+| edge.isLeftToRight() | 源在左、目标在右 |
+| edge.isRightToLeft() | 源在右、目标在左 |
+| edge.isTopToBottom() | 源在上、目标在下 |
+| edge.isBottomToTop() | 源在下、目标在上 |
+| edge.isUnknownDirection() | 使用默认中心方向（0.5, 0.5） |
+| edge.isNonStandardDirection() | 非标准方向 |
+
+#### 静态方法（3.2.2 新增）⭐
+
+| 方法 | 说明 |
+|------|------|
+| Edge.getCenterLine(source, target) | 计算两实体间的中心连线 |
+| Edge.getNormalVectorByRate(rate) | 根据 rate 推算法线方向 |
+| Edge.getExactEdgePositionByRate(rect, rate) | 根据 rate 获取精确边缘坐标 |
+
+#### 碰撞检测（3.2.2 新增）⭐
+
+| 方法 | 说明 |
+|------|------|
+| edge.isIntersectsWithRectangle(rect) | 碰撞箱框选检测 |
+| edge.isIntersectsWithLocation(location) | 鼠标悬浮检测 |
+| edge.isIntersectsWithLine(line) | 线段框选检测 |
+
+---
+
+### 4.8 Vector 格式
+
+```javascript
+// 设置连线端点位置的格式
+{ _: "Vector", x: 0.5, y: 0.01 }
+// x, y 范围: 0~1，表示在节点边上的相对位置
+```
+
+| 方向 | x | y | 位置 |
+|------|---|---|------|
+| 左边缘中心 | 0.01 | 0.5 |
+| 右边缘中心 | 0.99 | 0.5 |
+| 上边缘中心 | 0.5 | 0.01 |
+| 下边缘中心 | 0.5 | 0.99 |
+| 左上角 | 0.01 | 0.01 |
+| 右上角 | 0.99 | 0.01 |
+| 左下角 | 0.01 | 0.99 |
+| 右下角 | 0.99 | 0.99 |
+
+---
+
+## 五、插件工程基础
+
+### 5.1 插件文件结构
+
+```
+com.example.my-plugin.prg (或文件夹)
+├── metadata.msgpack (必须) - 元数据二进制文件
+├── extension.js (必须)     - 插件入口文件
+├── metadata.json           - 元数据源文件（用于生成 msgpack）
+├── README.md               - 说明文档（可选）
+└── icon.png                - 图标（可选）
+```
+
+#### metadata.json 格式
+
+```json
+{
+  "version": "2.0.0",
+  "extension": {
+    "id": "com.example.my-plugin",
+    "name": "我的插件",
+    "description": "插件描述",
+    "version": "1.0.0",
+    "author": "作者 <email>"
+  }
+}
+```
+
+- version: 支持的 prg 文件版本号（不是插件版本）
+- extension.version: 插件自身的版本号
+- extension.id: 建议 使用反向域名命名法
+
+### 5.2 快捷键格式
+
+#### 序列按键（推荐用于插件）
+
+```javascript
+await prg.keybinds_register(
+  "my-action-id",           // 唯一 ID
+  { $lucide: "IconName" },   // 图标名称
+  "a r l",                   // 序列按键：依次按 a、r、l
+  Comlink.proxy(handler)      // 处理函数
+);
+```
+
+#### 组合按键
+
+```javascript
+"C-l"        // Ctrl+L
+"C-S-l"      // Ctrl+Shift+L
+"M-l"        // Alt+L (Meta)
+"A-l"        // Alt+L
+```
+
+#### 注意事项
+
+- 快捷键设置页面不显示扩展插件的快捷键（这是软件设计）
+- 快捷键配置会被保存到 keybinds2.json
+- 更新插件后可能需要手动重置快捷键才能生效
+- **语法错误会导致后续所有代码无法执行**，包括快捷键注册！
+
+---
+
+===========================================
+# 第三部分：调试 & 问题排查 🔧
+===========================================
+
+## 六、调试工具箱
+
+### 6.1 无法打开浏览器控制台时
+
+Project Graph 的扩展运行在 Web Worker 中，无法直接访问 DOM 和主线程变量。
+**解决方案**：使用 prg.toast() 显示调试信息到右下角弹窗。
+
+### 6.2 推荐的调试流程
+
+1. 创建单独的测试插件（如 AutoRelinktest）
+2. 在测试插件中逐步测试每个 API
+3. 确认 API 正常后再集成到主插件
+4. 主插件中使用详细的日志 + 弹窗双重输出
+
+### 6.3 日志收集模式
+
+```javascript
+let debugLogs = [];
+function log(msg) {
+  debugLogs.push(msg);
+  if (debugLogs.length > 20) debugLogs.shift();
+}
+// 通过 prg.toast() 显示日志
+```
+
+### 6.4 🔴 逐行诊断日志（精确定位错误位置）
+
+当代码出错但不知道具体哪一行时，使用编号日志：
+
+```javascript
+for (const item of list) {
+  try {
+    log(`[DEBUG-1] 步骤1完成: ${id}`);
+    const result1 = await someAsyncOp(item);
+    
+    log(`[DEBUG-2] 步骤2完成: ${JSON.stringify(result1)}`);
+    const result2 = anotherOp(result1);
+    
+    log(`[DEBUG-3] 步骤3完成`);
+    finalAction(result2);
+  } catch (x) {
+    log(`[ERROR@${getLineNum(x.stack)}] ${x.message.slice(0,50)}`);
+  }
+}
+
+// 从 stack 中提取行号的辅助函数
+function getLineNum(stack) {
+  const match = stack?.split('\n')[1]?.match(/:(\d+)/);
+  return match ? match[1] : '?';
+}
+```
+
+**输出示例分析**：
+```
+[T] rel-1ok:dc1466     ← 步骤1成功（获取到缓存对象）
+[T] rel-2ok:dc1466 rr=[object Promise],[object Promise]  ← 步骤2成功但数据异常！
+[T] rel错@81:Cannot...  ← 步骤3失败，在第81行
+```
+→ 通过对比哪个步骤最后成功，精确定位问题所在
+
+### 6.5 常见问题的日志特征
+
+| 日志特征 | 问题原因 | 解决方案 |
+|---------|---------|---------|
+| `[object Promise]` | 属性未 await | 给该属性加 await |
+| `Cannot convert object to primitive` | 对 Proxy 执行了禁止操作 | 改用 UUID 字符串 |
+| `undefined` 或 `NaN` | 属性路径错误或未 await | 检查属性链，逐层 await |
+| 循环不执行 | 数组实际是 Promise | async 函数加 await |
+| 快捷键未注册 | 文件有语法错误 | 检查注释处是否有打字错误 |
+
+---
+
+## 七、常见错误及解决方案
+
+### 7.1 Cannot convert object to primitive value
+
+**原因**: 对 Comlink Proxy 执行了禁止的操作（Object.keys、String() 等）
+
+**解决**: 
+- 不对 Proxy 对象使用 Object.keys / String() / 存入 Set/Map
+- 使用 UUID 字符串作为标识符
+- 用普通对象 {} 缓存 Proxy 引用
+
+### 7.2 🔴 [object Promise] 出现在数值位置（最常见！）
+
+**症状**: 
+- 日志显示 `rr=[object Promise],[object Promise]`
+- 计算结果为 NaN 或 undefined
+- 区域判断全部错误
+
+**原因**: Comlink Proxy 对象的属性也是 Promise，没有 await
+
+**案例**:
+```javascript
+// ❌ 导致 [object Promise]
+const r = await entity.collisionBox.getRectangle();
+return { left: r.left, top: r.top };  // r.left 是 Promise！
+
+// ✅ 正确
+const l = await r.left, t = await r.top;
+return { left: l, top: t };
+```
+
+**解决**: 
+1. 检查所有从 Proxy 获取的属性
+2. 每个属性访问都加 await
+3. 使用封装好的 getRect() 函数统一处理
+
+### 7.3 🔴 async 函数忘记 await（导致静默失败）
+
+**症状**: 
+- 代码执行无报错但不生效
+- 数组循环不执行
+- 变量类型是 `[object Object]` 但应该是数组
+
+**原因**: 调用 async 函数但没有 await，得到的是 Promise 对象
+
+**案例**:
+```javascript
+// ❌ 导致循环不执行
+async function getData() { return [1, 2, 3]; }
+const arr = getData();       // arr 是 Promise，不是数组！
+for (const x of arr) { }     // 不执行！
+
+// ✅ 正确
+const arr = await getData(); // arr 是 [1, 2, 3]
+```
+
+**解决**: 所有 async 函数调用前加 await
+
+### 7.4 getSelectedEntities 返回 undefined
+
+**原因**: 该方法有时行为不一致
+
+**解决**: 
+```javascript
+let sel;
+try { sel = await sm.getSelectedEntities(); } catch(e) { ... }
+if (!Array.isArray(sel) || !sel.length) { ... }
+```
+
+### 7.5 快捷键不生效
+
+**原因**: 
+- 配置被保存到 keybinds2.json
+- 需要重置快捷键或清除配置
+
+**解决**: 删除配置文件或重新注册
+
+### 7.6 修改边属性后界面不更新
+
+**原因**: 修改 sourceRectangleRate/targetRectangleRate 后没有调用 updateReferences()
+
+**解决**: 
+```javascript
+edge.sourceRectangleRate = { _: "Vector", x: 0.99, y: 0.5 };
+edge.targetRectangleRate = { _: "Vector", x: 0.01, y: 0.5 };
+await stageManager.updateReferences();  // 必须！否则界面不刷新
+```
+
+---
+
+**📚 继续学习：**
+- [实战案例：AutoRelink插件完整开发实录 → 包含算法设计、性能优化、v2.0极致优化](knowledge_autorelink.txt)
+- [源码架构深度解析 → 理解软件内部设计和类体系](knowledge_architecture.txt)

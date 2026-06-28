@@ -1,0 +1,525 @@
+# Project Graph 3.2.2 插件开发知识库 - 架构深度解析篇
+
+> **源码架构、类体系设计、开发经验总结**
+>
+> **适用版本**: project-graph-3.2.2 | **最后更新**: 2026-06-28（版本号同步；类体系待重新验证）
+>
+> **阅读时间**: 完整阅读 45分钟
+
+---
+
+## 📋 本章导航
+
+| 你想了解... | 跳转到... |
+|------------|----------|
+| 🏗️ 核心类体系 | §9.1 15-20个主要类详解 |
+| 🔗 边与节点的关联机制 | §9.2 完整实现机制解析 |
+| 📂 整体代码结构 | §9.3 目录树与模块划分 |
+| 💡 设计模式总结 | §9.4 关键设计要点 |
+| 🎯 对插件的启示 | §9.5 架构对开发的影响 |
+| 📝 Bug发展轨迹 | 附录A：6阶段完整历程 |
+| ✅ 开发建议清单 | 附录B：17条经验总结 |
+
+**🔗 相关文档：**
+- [核心知识：Comlink法则、API参考、调试指南](knowledge_core.txt)
+- [实战案例：AutoRelink插件开发实录、性能优化](knowledge_autorelink.txt)
+
+---
+
+## 九、Project Graph 源码架构深度解析
+
+> 🏗️ **本章目标**：深入理解 Project Graph 软件的内部架构，帮助开发者理解"为什么 API 这样设计"
+
+### 9.1 核心类体系（15-20个主要类）
+
+#### 基础抽象层（4个核心抽象类）
+
+**StageObject** (`app/src/core/stage/stageObject/abstract/StageObject.tsx`)
+- 所有舞台对象的基类
+- 包含：`uuid`、`isSelected`（选中状态）、`collisionBox`（碰撞箱）
+
+**Entity** (`app/src/core/stage/stageObject/abstract/StageEntity.tsx`)
+- 实体基类（继承 StageObject）
+- 表示舞台上可见的"东西"（节点）
+
+**ConnectableEntity** (`app/src/core/stage/stageObject/abstract/ConnectableEntity.tsx`)
+- 可连接实体（继承 Entity）
+- **核心属性**：`geometryCenter: Vector`（几何中心点）
+- **一切可以被边（Edge）连接的节点都继承此类**
+- **非常简洁的类定义**（只有 geometryCenter 和 unknown 属性）
+- ⚠️ **没有任何边相关的属性或方法！**
+
+**Association / ConnectableAssociation** (`app/src/core/stage/stageObject/abstract/Association.tsx`)
+- 关联/关系基类
+- **ConnectableAssociation** 是边的直接父类
+- **关键数据结构**：
+```typescript
+@serializable
+public override associationList: ConnectableEntity[] = [];
+
+get source(): ConnectableEntity {
+  return this.associationList[0];  // 起点（索引0）
+}
+
+get target(): ConnectableEntity {
+  return this.associationList[1];  // 终点（索引1）
+}
+```
+
+#### 连线相关核心类（4个）
+
+**Edge** (`app/src/core/stage/stageObject/association/Edge.tsx`) ⭐
+- 边的抽象类（继承 ConnectableAssociation）
+- **关键属性**：
+  - `source`: ConnectableEntity - 起始节点
+  - `target`: ConnectableEntity - 目标节点
+  - `collisionBox: CollisionBox` - 碰撞箱（用于鼠标悬停检测）
+  - `isSelected: boolean` - 选中状态
+  - `_isSelected: boolean` - 内部选中标志
+  - `sourceRectangleRate: Vector` - 连线在源节点的连接位置 (0~1)
+  - `targetRectangleRate: Vector` - 连线在目标节点的连接位置 (0~1)
+
+- **关键方法**：
+  ```typescript
+  get bodyLine(): Line  // 获取连线的主体线段（考虑节点边界裁剪）
+  isIntersectsWithLocation(location: Vector): boolean  // 鼠标是否悬停在边上
+  isIntersectsWithRectangle(rectangle: Rectangle): boolean  // 框选检测
+  ```
+
+**LineEdge** - 直线边（具体实现）
+**CubicCatmullRomSplineEdge** - 曲线边（贝塞尔曲线实现）
+**MultiTargetUndirectedEdge** - 多目标无向边
+
+#### 节点实体类（8个具体节点类型）
+
+| 类名 | 文件路径 | 用途 |
+|------|---------|------|
+| TextNode | entity/TextNode.tsx | 文本节点 |
+| ImageNode | entity/ImageNode.tsx | 图片节点 |
+| Section | entity/Section.tsx | 分组框/区域容器 |
+| ConnectPoint | entity/ConnectPoint.tsx | 连接点（质点）|
+| UrlNode | entity/UrlNode.tsx | URL链接节点 |
+| SvgNode | entity/SvgNode.tsx | SVG图形节点 |
+| LatexNode | entity/LatexNode.tsx | LaTeX公式节点 |
+| PenStroke | entity/PenStroke.tsx | 自由笔画 |
+
+#### 碰撞检测系统
+
+**CollisionBox** (`app/src/core/stage/stageObject/collisionBox/collisionBox.tsx`)
+- 包含多个 Shape 对象的数组
+- **核心方法**：
+  ```typescript
+  isContainsPoint(location: Vector): boolean      // 点是否在内
+  isIntersectsWithRectangle(rect): boolean         // 与矩形相交
+  isContainedByRectangle(rect): boolean            // 完全被矩形包含
+  isIntersectsWithLine(line: Line): boolean        // 与线段相交
+  getRectangle(): Rectangle                        // 获取最小外接矩形
+  ```
+- **getRectangle() 实现原理**：遍历所有 Shape，计算全局最小/最大 x/y 坐标
+
+#### 核心管理器
+
+**StageManager** (`app/src/core/stage/stageManager/StageManager.tsx`) ⭐⭐⭐
+- **最重要的管理类！管理舞台上的所有对象**
+- **核心数据源**：`this.project.stage` （StageObject[] 数组）
+- **关键查询方法**：
+  ```typescript
+  getSelectedEntities(): Entity[]
+    // 实现：filter(so => so.isSelected && so instanceof Entity && !isBackgroundImage)
+    // ⚠️ 有时返回 undefined 而非空数组！
+
+  getEdges(): Edge[]
+    // 实现：filter(node => node instanceof Edge)
+
+  getConnectableEntity(): ConnectableEntity[]
+    // 实现：filter可连接实体，排除背景图片
+
+  clearSelectAll(): void
+    // 实现：遍历所有 stage object，设置 isSelected = false
+
+  get(uuid: string): StageObject | undefined
+    // 按 UUID 查找（O(N)线性查找！）
+  ```
+
+**ControllerClass** 及其子类（15+ 个控制器）
+- ControllerEntityClickSelectAndMove - 点击选择和移动
+- ControllerNodeConnection - 连线操作（拖连、点连、折连）
+- ControllerRectangleSelect - 框选
+- ControllerCamera - 视口控制
+- 等等...
+
+### 9.2 "选中节点获取关联连线"的完整实现机制
+
+#### 🔑 核心原理：双向引用 + 遍历过滤
+
+##### 数据结构设计（关键！）
+
+每条 **Edge** 都持有对两端节点的**直接对象引用**（不是 UUID）：
+
+```typescript
+// Association.tsx (Line 22-43)
+export abstract class ConnectableAssociation extends Association {
+  @serializable
+  public override associationList: ConnectableEntity[] = [];  // [source, target]
+
+  get source(): ConnectableEntity { return this.associationList[0]; }
+  get target(): ConnectableEntity { return this.associationList[1]; }
+}
+```
+
+**这意味着：每条边都知道自己连接了哪两个节点的对象引用！**
+
+##### 获取选中节点的标准方式
+
+通过 StageManager.getSelectedEntities() 方法：
+
+```typescript
+// StageManager.tsx (Line 435-439)
+getSelectedEntities(): Entity[] {
+  return this.project.stage.filter(
+    (so) => so.isSelected 
+      && so instanceof Entity 
+      && !(so instanceof ImageNode && (so as ImageNode).isBackground),
+  ) as Entity[];
+}
+```
+
+**实现细节**：
+1. 遍历 `project.stage` 数组（包含所有 StageObject）
+2. 过滤条件：`isSelected === true` 且是 Entity 类型且不是背景图
+3. 返回 Entity[] 数组
+4. ⚠️ **性能注意**：这是 O(N) 操作，N = 舞台上对象总数
+
+##### 查找与选中节点相关的边（三种方式）
+
+###### 方式1：遍历所有边，检查 source/target 引用匹配（最常用）
+
+```typescript
+// 典型用法模式
+const selectedEntities = project.stageManager.getSelectedEntities();
+const allEdges = project.stageManager.getEdges();
+
+const relatedEdges = allEdges.filter(edge =>
+  selectedEntities.includes(edge.source) ||  // 边的起点是选中节点
+  selectedEntities.includes(edge.target)     // 边的终点是选中节点
+);
+```
+
+**实际使用场景**：
+- ControllerNodeConnection.tsx (Line 216-220)：多重连接时收集选中的起始节点
+- shortcutKeysRegister.tsx (188行)：快捷键操作时检查是否有选中的边
+- 各种删除/移动/复制操作前的关联性检查
+
+###### 方式2：利用边的 isSelected 属性（边也可以被独立选中！）
+
+```typescript
+// Edge.tsx (Line 28-34)
+_isSelected: boolean = false;
+public get isSelected(): boolean { return this._isSelected; }
+public set isSelected(value: boolean) { this._isSelected = value; }
+```
+
+**使用场景**：
+- 用户点击某条边 → 该边 isSelected = true
+- 框选操作 → 同时选中框内的边和节点
+- rectangleSelectEngine.tsx (120, 228行)：框选时设置 edge.isSelected = true
+- ControllerAssociationReshape.tsx (67行)：检查是否有选中的直线边
+
+###### 方式3：GraphMethods 提供的专用查询方法（仅内部使用）
+
+```typescript
+// GraphMethods.tsx
+public getOutgoingEdges(node: ConnectableEntity): Edge[] {
+  const result: Edge[] = [];
+  for (const edge of this.project.stageManager.getEdges()) {
+    if (edge.source === node) {  // 用 === 比较对象引用！
+      result.push(edge);
+    }
+  }
+  return result;
+}
+
+public getIncomingEdges(node: ConnectableEntity): Edge[] {
+  const result: Edge[] = [];
+  for (const edge of this.project.stageManager.getEdges()) {
+    if (edge.target === node) {
+      result.push(edge);
+    }
+  }
+  return result;
+}
+
+public getEdgesBetween(a: ConnectableEntity, b: ConnectableEntity): Edge[] {
+  // 返回两个节点之间的所有边（双向）
+}
+```
+
+⚠️ **重要限制**：这些方法虽然在 GraphMethods 中是 public 的，但 **StageManager 通过 Comlink 暴露给插件的 API 不包含这些方法**！（详见 knowledge_autorelink.txt 8.3 节实测结果）
+
+##### 完整流程图解
+
+```
+用户点击节点A 或 框选多个节点
+    ↓
+ControllerEntityClickSelectAndMove.mousedown()
+    ↓
+nodeA.isSelected = true  ✅ （或其他节点也被设为 true）
+    ↓
+需要查找与选中节点相关的边时：
+    ↓
+┌─ 方式A：StageManager.getEdges() → 获取所有边数组
+│   ↓
+│   for (const edge of allEdges) {
+│     if (selectedNodes.includes(edge.source) ||
+│         selectedNodes.includes(edge.target)) {
+│       relatedEdges.push(edge);  // 收集关联边
+│     }
+│   }
+│
+├─ 方式B：StageManager.getSelectedAssociations()
+│   ↓
+│   直接返回 isSelected=true 的 Association（包括 Edge）
+│   ⚠️ 但这只能找到被选中的边，不是与选中节点关联的边
+│
+└─ 方式C：GraphMethods.getOutgoingEdges(node) / getIncomingEdges(node)
+    ↓
+    内部还是遍历全部边！且用 === 比较对象引用
+    ⚠️ Comlink Proxy 环境下可能失效（引用不同）
+    ↓
+✅ 最终得到 relatedEdges 数组
+```
+
+##### 为什么插件中必须用遍历方案？
+
+1. **Comlink Proxy 限制**：`edge.source === node` 对 Proxy 对象可能返回 false（即使逻辑上是同一个对象）
+2. **API 未暴露**：GraphMethods 的便捷方法未通过 StageManager 暴露给插件
+3. **UUID 字符串安全**：用 `await edge.source.uuid` 得到字符串后比较是最可靠的方式
+4. **性能优化**：通过 knowledge_autorelink.txt 8.3 节的索引缓存方案，将 O(E) 遍历优化为 O(1) 查找
+
+### 9.3 整体代码结构概览
+
+```
+app/src/core/
+├── stage/                          # 🎭 舞台核心层
+│   ├── stageManager/              # 舞台管理器
+│   │   ├── StageManager.tsx       # ⭐⭐⭐ 核心管理器（最重要的类）
+│   │   ├── basicMethods/          # 基础功能模块
+│   │   │   ├── GraphMethods.tsx   # 图算法（getOutgoingEdges等）
+│   │   │   ├── SectionMethods.tsx # 分组框操作
+│   │   │   └── PenStrokeMethods.tsx# 笔画操作
+│   │   └── concreteMethods/       # 具体业务功能
+│   │       ├── LayoutManager.tsx          # 自动布局
+│   │       ├── StageDeleteManager.tsx     # 删除管理
+│   │       ├── StageNodeConnector.tsx     # 节点连接
+│   │       ├── StageAutoAlignManager.tsx  # 自动对齐
+│   │       └── ... (共15+个管理器)
+│   │
+│   ├── stageObject/               # 舞台对象模型
+│   │   ├── abstract/              # 抽象基类
+│   │   │   ├── StageObject.tsx          # 最顶层基类
+│   │   │   ├── StageEntity.tsx          # 实体基类
+│   │   │   ├── ConnectableEntity.tsx    # 可连接实体
+│   │   │   ├── Association.tsx          # 关联基类
+│   │   │   └── StageObjectInterface.tsx # 接口定义
+│   │   │
+│   │   ├── entity/                # 具体节点类型（8种）
+│   │   │   ├── TextNode.tsx
+│   │   │   ├── ImageNode.tsx
+│   │   │   ├── Section.tsx
+│   │   │   ├── ConnectPoint.tsx
+│   │   │   └── ...
+│   │   │
+│   │   ├── association/           # 连线类型（4种）
+│   │   │   ├── Edge.tsx           # ⭐ 边抽象类
+│   │   │   ├── LineEdge.tsx       # 直线边
+│   │   │   ├── CubicCatmullRomSplineEdge.tsx  # 曲线边
+│   │   │   ├── MutiTargetUndirectedEdge.tsx   # 多目标无向边
+│   │   │   ├── EdgeCollisionBoxGetter.tsx     # 边碰撞箱计算
+│   │   │   └── SyncAssociation.tsx            # 同步关联
+│   │   │
+│   │   └── collisionBox/          # 碰撞检测系统
+│   │       └── collisionBox.tsx   # 碰撞箱类
+│   │
+│   ├── Camera.tsx                 # 相机/视口控制
+│   └── Canvas.tsx                 # 画布配置
+│
+├── service/                        # 🔧 服务层（业务逻辑）
+│   ├── controlService/            # 交互控制服务
+│   │   ├── controller/            # 控制器系统
+│   │   │   ├── ControllerClass.tsx        # 控制器基类
+│   │   │   └── concrete/          # 15+个具体控制器
+│   │   │       ├── ControllerEntityClickSelectAndMove.tsx  # 点击选择&移动
+│   │   │       ├── ControllerNodeConnection.tsx           # ⭐ 连线控制器
+│   │   │       ├── ControllerRectangleSelect.tsx          # 框选控制器
+│   │   │       ├── ControllerCamera.tsx                   # 相机控制
+│   │   │       ├── ControllerCutting.tsx                  # 切割操作
+│   │   │       └── ...
+│   │   │
+│   │   ├── shortcutKeysEngine/    # 快捷键注册与管理
+│   │   ├── keyboardOnlyEngine/    # 纯键盘操作引擎
+│   │   └── rectangleSelectEngine/# 框选算法引擎
+│   │
+│   ├── dataManageService/         # 数据管理服务
+│   │   ├── copyEngine/            # 复制/粘贴引擎
+│   │   ├── contentSearchEngine/   # 内容搜索
+│   │   ├── aiEngine/             # AI 功能集成
+│   │   └── connectNodeSmartTools.tsx  # 智能连接工具
+│   │
+│   ├── dataGenerateService/       # 数据生成服务
+│   │   ├── autoComputeEngine/     # 自动计算引擎
+│   │   ├── stageImportEngine/     # 导入功能（Markdown/Mermaid等）
+│   │   └── stageExportEngine/     # 导出功能（PNG/SVG/Markdown等）
+│   │
+│   └── feedbackService/           # 用户反馈服务
+│       ├── effectEngine/          # 特效系统（30+种特效）
+│       ├── SoundService.tsx       # 音效管理
+│       └── stageStyle/            # 视觉样式管理
+│
+├── render/                         # 🎨 渲染层
+│   └── canvas2d/                  # Canvas 2D 渲染器
+│       ├── renderer.tsx           # 主渲染器（协调所有渲染）
+│       ├── basicRenderer/         # 基础图形渲染
+│       │   ├── shapeRenderer.tsx  # 形状渲染
+│       │   ├── textRenderer.tsx   # 文本渲染
+│       │   └── curveRenderer.tsx  # 曲线渲染
+│       ├── entityRenderer/        # 实体渲染器
+│       │   ├── EdgeRenderer.tsx   # 边渲染（含多种边的渲染策略）
+│       │   ├── TextNodeRenderer.tsx
+│       │   ├── ImageNodeRenderer.tsx
+│       │   └── ... (每种节点一个渲染器)
+│       └── controllerRenderer/    # 控制器渲染（连线预览等）
+│
+├── extension/                      # 🔌 扩展/插件系统
+│   ├── Extension.tsx             # 扩展基类
+│   ├── ExtensionManager.tsx       # 扩展生命周期管理
+│   ├── ExtensionRuntime.tsx       # 扩展运行时（Web Worker）
+│   └── api/                       # 扩展 API 定义
+│       ├── host.tsx              # 主线程 API（暴露给插件的对象）
+│       └── remote.tsx            # Web Worker API
+│
+└── Project.tsx                     # 🏠 项目根类
+    └── 包含：stageManager, renderer, controller, effects 等
+```
+
+### 9.4 关键设计模式总结
+
+| 设计要点 | 实现方式 | 插件开发者注意事项 |
+|---------|---------|------------------|
+| **数据结构** | Edge 持有 source/target 对象引用（双向关联）| Comlink 下引用比较可能失败，改用 UUID |
+| **选中机制** | 每个 StageObject 都有 isSelected 属性 | 可同时选中节点和边 |
+| **查询方式** | 遍历所有 Edge，过滤 source/target 匹配 | 必须用索引缓存优化性能 |
+| **对象标识** | UUID 字符串作为唯一标识 | 不要存储 Proxy 对象，存 UUID |
+| **序列化** | @serializable 装饰器标记持久化字段 | 修改序列化字段需谨慎 |
+| **碰撞检测** | CollisionBox + Shape 组合系统 | getRect() 已封装好安全访问 |
+| **事件处理** | 控制器模式（每个交互一个Controller）| 插件通过快捷键触发自定义逻辑 |
+| **渲染分离** | 渲染器与数据模型完全分离 | 插件不涉及渲染，只操作数据 |
+
+### 9.5 对插件开发的启示
+
+1. **理解数据流比学习 API 更重要**
+   - Edge ↔ Entity 的双向引用是核心
+   - StageManager 是唯一的数据入口
+   - 所有操作最终都归结为修改属性 + updateReferences()
+
+2. **性能优化的关键点**
+   - 减少跨线程通信次数（每次 await 都是 IPC）
+   - 缓存不变的数据（如边索引、节点位置）
+   - 批量操作优于循环单次操作
+
+3. **Comlink 环境的特殊限制**
+   - 对象引用比较（===）不可靠
+   - 必须用 UUID 字符串作为标识符
+   - Proxy 对象不能参与集合运算
+   - 所有属性访问都需要 await
+
+4. **扩展 API 的设计哲学**
+   - 只暴露必要的、安全的操作
+   - 复杂操作由插件组合基础 API 实现
+   - 不暴露内部优化方法（如 getOutgoingEdges）
+   - 保持 API 稳定性和安全性
+
+---
+
+===========================================
+# 附录：开发经验回顾 📝
+===========================================
+
+> 📖 **本章为历史记录**：完整的 Bug 发展轨迹和建议清单，供深度研究者查阅
+
+## 附录 A：典型 Bug 发展轨迹（5个阶段）
+
+本次开发过程中遇到的问题呈现清晰的递进关系：
+
+```
+第1阶段：基础 API 学习
+  → Cannot convert object to primitive value
+  → [object Promise] 出现
+  → 解决：理解 Comlink Proxy 机制，全面 await
+
+第2阶段：逻辑实现
+  → 连线方向反向
+  → 解决：理解"位置关系"与"连线方向"是对应相反的
+
+第3阶段：交互体验
+  → 单击选中时连线突变
+  → 解决：三阶段初始化 + 移动阈值检测
+  → 拖拽时方向抖动/反向
+  → 解决：区域切换检测 + cardinal 过滤
+
+第4阶段：稳定性 & 性能
+  → 节点瞬移 → 确认为软件本体问题
+  → 大图不工作 → 强制调整机制 + 性能优化
+  → 发布版语法错误 → 仔细审查 + diff 比较
+
+第5阶段：极致性能优化（v1.0）
+  → 大图仍然卡顿 → 分析根因是每帧重复遍历边
+  → 尝试 Entity 直接边方法 → 源码分析 + 实测确认不可用
+  → 最终方案: 索引缓存 + O(1)查找 + 三层缓存策略
+  → 性能提升: 125x (异步操作数)
+
+第6阶段：v2.0 极致性能优化
+  → 仍有1-2秒延迟 → 深度诊断getRect()是瓶颈(7次IPC/调用)
+  → 实施10项优化措施:
+    ├─ 优化6: 矩形缓存策略(150ms TTL) → 减少70-90% getRect调用
+    ├─ 优化7: Promise.all并行化 → 提速5-20倍
+    ├─ 优化8: 预存实体引用到索引 → 每条边减少2次IPC
+    ├─ 优化9: 智能跳过未变化的边 → 跳过80%无效计算
+    └─ 优化10: 调试模式开关 → 减少CPU开销
+  → 最终效果: 延迟从1-2秒降低到100-300ms (10-16x提升)
+  → 建立开发与发布流程规范: 只在用户要求时同步到发布版
+```
+
+## 附录 B：开发建议完整清单
+
+1. **先用测试插件验证 API** — 不要在主插件中同时测试 API 和业务逻辑
+2. **逐行诊断日志是神器** — 编号日志能精确定位问题行号
+3. **发布前做 diff 比较** — 调试版和发布版的差异应该只有日志相关
+4. **角落端点值可能有风险** — 即使不是插件导致的，也应避免使用
+5. **异步数据有时间戳** — 分两次获取的数据可能不一致，需要预计算缓存
+6. **语法错误会静默失败** — 不会报错，只是后续代码全不执行（包括快捷键注册！）
+7. **大图场景必须考虑性能** — 60fps 下每帧时间有限，要减少异步调用
+8. **移动检测不能依赖单一机制** — 结合阈值 + 强制调整双重保障
+9. **阅读源码比猜测更可靠** — Entity.edges 是 function 但调用失败，源码揭示了真正原因
+10. **缓存是解决重复计算的标准方案** — 建索引只做一次，后续 O(1) 查找
+11. **Comlink 函数可能有上下文问题** — `.apply(undefined)` 失败说明 Proxy 函数不是普通函数
+12. **Web Worker 没有 window 对象** — 用 globalThis 代替
+13. **矩形缓存是性能优化的银弹** — getRect()每次7次IPC，缓存后可减少70-90%调用
+14. **Promise.all 并行化可大幅提速** — 独立异步操作并行执行，提速5-20倍
+15. **预存引用避免重复获取** — 在建索引时保存实体引用，后续直接使用
+16. **智能跳过未变化的数据** — 区域/位置没变的边不需要重新计算，可跳过80%
+17. **开发与发布分离** — 只在用户明确要求时才同步到发布版，保持稳定性
+
+> 📖 **快速版（已分类整理）**：见 [knowledge_core.txt §1.4 12条核心开发建议](knowledge_core.txt#14--12条核心开发建议已分类)
+
+---
+
+**📚 继续学习：**
+- [核心知识：Comlink五大黄金法则、API参考、调试指南](knowledge_core.txt)
+- [实战案例：AutoRelink插件完整开发实录、性能优化历程](knowledge_autorelink.txt)
+
+**💡 架构学习关键要点：**
+1. **Edge ↔ Entity 双向引用** 是数据模型的核心
+2. **StageManager 是唯一数据入口**，所有查询都经过它
+3. **控制器模式** 处理所有用户交互
+4. **渲染与数据分离** 确保插件只需操作数据层
+5. **Comlink Proxy 限制** 导致必须用UUID而非对象引用
